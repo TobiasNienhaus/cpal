@@ -4,6 +4,7 @@ use crate::{
     SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
     SupportedStreamConfigsError, COMMON_SAMPLE_RATES,
 };
+use once_cell::sync::Lazy;
 use std;
 use std::ffi::OsString;
 use std::fmt;
@@ -367,7 +368,7 @@ impl Device {
                 len += 1;
             }
 
-            // Create the utf16 slice and covert it into a string.
+            // Create the utf16 slice and convert it into a string.
             let name_slice = slice::from_raw_parts(ptr_utf16, len as usize);
             let name_os_string: OsString = OsStringExt::from_wide(name_slice);
             let name_string = match name_os_string.into_string() {
@@ -959,7 +960,7 @@ impl Device {
 impl PartialEq for Device {
     #[inline]
     fn eq(&self, other: &Device) -> bool {
-        // Use case: In oder to check whether the default device has changed
+        // Use case: In order to check whether the default device has changed
         // the client code might need to compare the previous default device with the current one.
         // The pointer comparison (`self.device == other.device`) don't work there,
         // because the pointers are different even when the default device stays the same.
@@ -1068,29 +1069,27 @@ impl Endpoint {
     }
 }
 
-lazy_static! {
-    static ref ENUMERATOR: Enumerator = {
-        // COM initialization is thread local, but we only need to have COM initialized in the
-        // thread we create the objects in
-        com::com_initialized();
+static ENUMERATOR: Lazy<Enumerator> = Lazy::new(|| {
+    // COM initialization is thread local, but we only need to have COM initialized in the
+    // thread we create the objects in
+    com::com_initialized();
 
-        // building the devices enumerator object
-        unsafe {
-            let mut enumerator: *mut IMMDeviceEnumerator = ptr::null_mut();
+    // building the devices enumerator object
+    unsafe {
+        let mut enumerator: *mut IMMDeviceEnumerator = ptr::null_mut();
 
-            let hresult = CoCreateInstance(
-                &CLSID_MMDeviceEnumerator,
-                ptr::null_mut(),
-                CLSCTX_ALL,
-                &IMMDeviceEnumerator::uuidof(),
-                &mut enumerator as *mut *mut IMMDeviceEnumerator as *mut _,
-            );
+        let hresult = CoCreateInstance(
+            &CLSID_MMDeviceEnumerator,
+            ptr::null_mut(),
+            CLSCTX_ALL,
+            &IMMDeviceEnumerator::uuidof(),
+            &mut enumerator as *mut *mut IMMDeviceEnumerator as *mut _,
+        );
 
-            check_result(hresult).unwrap();
-            Enumerator(enumerator)
-        }
-    };
-}
+        check_result(hresult).unwrap();
+        Enumerator(enumerator)
+    }
+});
 
 /// RAII objects around `IMMDeviceEnumerator`.
 struct Enumerator(*mut IMMDeviceEnumerator);
