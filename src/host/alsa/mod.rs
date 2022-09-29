@@ -4,6 +4,7 @@ extern crate parking_lot;
 
 use self::alsa::poll::Descriptors;
 use self::parking_lot::Mutex;
+use crate::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crate::{
     BackendSpecificError, BufferSize, BuildStreamError, ChannelCount, Data,
     DefaultStreamConfigError, DeviceNameError, DevicesError, InputCallbackInfo, OutputCallbackInfo,
@@ -16,7 +17,6 @@ use std::convert::TryInto;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::vec::IntoIter as VecIntoIter;
-use traits::{DeviceTrait, HostTrait, StreamTrait};
 
 pub use self::enumerate::{default_input_device, default_output_device, Devices};
 
@@ -252,15 +252,12 @@ impl Device {
 
         handle.prepare()?;
 
-        let num_descriptors = {
-            let num_descriptors = handle.count();
-            if num_descriptors == 0 {
-                let description = "poll descriptor count for stream was 0".to_string();
-                let err = BackendSpecificError { description };
-                return Err(err.into());
-            }
-            num_descriptors
-        };
+        let num_descriptors = handle.count();
+        if num_descriptors == 0 {
+            let description = "poll descriptor count for stream was 0".to_string();
+            let err = BackendSpecificError { description };
+            return Err(err.into());
+        }
 
         // Check to see if we can retrieve valid timestamps from the device.
         // Related: https://bugs.freedesktop.org/show_bug.cgi?id=88503
@@ -314,7 +311,7 @@ impl Device {
 
         let hw_params = alsa::pcm::HwParams::any(handle)?;
 
-        // TODO: check endianess
+        // TODO: check endianness
         const FORMATS: [(SampleFormat, alsa::pcm::Format); 3] = [
             //SND_PCM_FORMAT_S8,
             //SND_PCM_FORMAT_U8,
@@ -559,18 +556,20 @@ fn input_stream_worker(
 ) {
     let mut ctxt = StreamWorkerContext::default();
     loop {
-        let flow = report_error(
-            poll_descriptors_and_prepare_buffer(&rx, stream, &mut ctxt),
-            error_callback,
-        )
-        .unwrap_or(PollDescriptorsFlow::Continue);
+        let flow =
+            poll_descriptors_and_prepare_buffer(&rx, stream, &mut ctxt).unwrap_or_else(|err| {
+                error_callback(err.into());
+                PollDescriptorsFlow::Continue
+            });
 
         match flow {
             PollDescriptorsFlow::Continue => {
                 continue;
             }
             PollDescriptorsFlow::XRun => {
-                report_error(stream.channel.prepare(), error_callback);
+                if let Err(err) = stream.channel.prepare() {
+                    error_callback(err.into());
+                }
                 continue;
             }
             PollDescriptorsFlow::Return => return,
@@ -585,14 +584,15 @@ fn input_stream_worker(
                     StreamType::Input,
                     "expected input stream, but polling descriptors indicated output",
                 );
-                let res = process_input(
+                if let Err(err) = process_input(
                     stream,
                     &mut ctxt.buffer,
                     status,
                     delay_frames,
                     data_callback,
-                );
-                report_error(res, error_callback);
+                ) {
+                    error_callback(err.into());
+                }
             }
         }
     }
@@ -606,16 +606,18 @@ fn output_stream_worker(
 ) {
     let mut ctxt = StreamWorkerContext::default();
     loop {
-        let flow = report_error(
-            poll_descriptors_and_prepare_buffer(&rx, stream, &mut ctxt),
-            error_callback,
-        )
-        .unwrap_or(PollDescriptorsFlow::Continue);
+        let flow =
+            poll_descriptors_and_prepare_buffer(&rx, stream, &mut ctxt).unwrap_or_else(|err| {
+                error_callback(err.into());
+                PollDescriptorsFlow::Continue
+            });
 
         match flow {
             PollDescriptorsFlow::Continue => continue,
             PollDescriptorsFlow::XRun => {
-                report_error(stream.channel.prepare(), error_callback);
+                if let Err(err) = stream.channel.prepare() {
+                    error_callback(err.into());
+                }
                 continue;
             }
             PollDescriptorsFlow::Return => return,
@@ -630,7 +632,7 @@ fn output_stream_worker(
                     StreamType::Output,
                     "expected output stream, but polling descriptors indicated input",
                 );
-                let res = process_output(
+                if let Err(err) = process_output(
                     stream,
                     &mut ctxt.buffer,
                     status,
@@ -638,25 +640,10 @@ fn output_stream_worker(
                     delay_frames,
                     data_callback,
                     error_callback,
-                );
-                report_error(res, error_callback);
+                ) {
+                    error_callback(err.into());
+                }
             }
-        }
-    }
-}
-
-fn report_error<T, E>(
-    result: Result<T, E>,
-    error_callback: &mut (dyn FnMut(StreamError) + Send + 'static),
-) -> Option<T>
-where
-    E: Into<StreamError>,
-{
-    match result {
-        Ok(val) => Some(val),
-        Err(err) => {
-            error_callback(err.into());
-            None
         }
     }
 }
@@ -905,7 +892,7 @@ impl Stream {
         let thread = thread::Builder::new()
             .name("cpal_alsa_in".to_owned())
             .spawn(move || {
-                input_stream_worker(rx, &*stream, &mut data_callback, &mut error_callback);
+                input_stream_worker(rx, &stream, &mut data_callback, &mut error_callback);
             })
             .unwrap();
         Stream {
@@ -930,7 +917,7 @@ impl Stream {
         let thread = thread::Builder::new()
             .name("cpal_alsa_out".to_owned())
             .spawn(move || {
-                output_stream_worker(rx, &*stream, &mut data_callback, &mut error_callback);
+                output_stream_worker(rx, &stream, &mut data_callback, &mut error_callback);
             })
             .unwrap();
         Stream {
@@ -1021,6 +1008,11 @@ fn set_sw_params_from_format(
 
         let start_threshold = match stream_type {
             alsa::Direction::Playback => buffer - period,
+
+            // For capture streams, the start threshold is irrelevant and ignored,
+            // because build_stream_inner() starts the stream before process_input()
+            // reads from it. Set it anyway I guess, since it's better than leaving
+            // it at an unspecified default value.
             alsa::Direction::Capture => 1,
         };
         sw_params.set_start_threshold(start_threshold.try_into().unwrap())?;
@@ -1031,7 +1023,13 @@ fn set_sw_params_from_format(
     sw_params.set_tstamp_mode(true)?;
     sw_params.set_tstamp_type(alsa::pcm::TstampType::MonotonicRaw)?;
 
-    pcm_handle.sw_params(&sw_params)?;
+    // tstamp_type param cannot be changed after the device is opened.
+    // The default tstamp_type value on most Linux systems is "monotonic",
+    // let's try to use it if setting the tstamp_type fails.
+    if pcm_handle.sw_params(&sw_params).is_err() {
+        sw_params.set_tstamp_type(alsa::pcm::TstampType::Monotonic)?;
+        pcm_handle.sw_params(&sw_params)?;
+    }
 
     Ok(period_len)
 }

@@ -141,11 +141,8 @@
 //! stream.pause().unwrap();
 //! ```
 
-#![recursion_limit = "512"]
+#![recursion_limit = "2048"]
 
-#[cfg(target_os = "windows")]
-#[macro_use]
-extern crate lazy_static;
 // Extern crate declarations with `#[macro_use]` must unfortunately be at crate root.
 #[cfg(target_os = "emscripten")]
 #[macro_use]
@@ -322,18 +319,32 @@ pub struct OutputStreamTimestamp {
 }
 
 /// Information relevant to a single call to the user's input stream data callback.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputCallbackInfo {
     timestamp: InputStreamTimestamp,
 }
 
 /// Information relevant to a single call to the user's output stream data callback.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputCallbackInfo {
     timestamp: OutputStreamTimestamp,
 }
 
 impl SupportedStreamConfig {
+    pub fn new(
+        channels: ChannelCount,
+        sample_rate: SampleRate,
+        buffer_size: SupportedBufferSize,
+        sample_format: SampleFormat,
+    ) -> Self {
+        Self {
+            channels,
+            sample_rate,
+            buffer_size,
+            sample_format,
+        }
+    }
+
     pub fn channels(&self) -> ChannelCount {
         self.channels
     }
@@ -539,6 +550,22 @@ impl Data {
 }
 
 impl SupportedStreamConfigRange {
+    pub fn new(
+        channels: ChannelCount,
+        min_sample_rate: SampleRate,
+        max_sample_rate: SampleRate,
+        buffer_size: SupportedBufferSize,
+        sample_format: SampleFormat,
+    ) -> Self {
+        Self {
+            channels,
+            min_sample_rate,
+            max_sample_rate,
+            buffer_size,
+            sample_format,
+        }
+    }
+
     pub fn channels(&self) -> ChannelCount {
         self.channels
     }
